@@ -20,11 +20,11 @@ dependencies {
     compile 'org.apache.spark:spark-launcher_2.11:2.1.0'
     compile 'org.apache.spark:spark-catalyst_2.11:2.1.0'
     compile 'org.apache.spark:spark-streaming_2.11:2.1.0'
-    compile 'org.apache.spark:spark-core_2.11:2.1.0'
-    compile "org.apache.hadoop:hadoop-client_2.6.0"
+    compile "org.apache.spark:spark-core_2.11:2.1.0"
+    compile "org.apache.hadoop:hadoop-client:2.6.0"
     compile "org.apache.hive:hive-exec:1.1.0"
-    compile "org.apache.hive:hive-serde_1.1.0"
-    compile "org.apache.hive.hcatalog:hive-hcatalog-core_1.1.0"
+    compile "org.apache.hive:hive-serde:1.1.0"
+    compile "org.apache.hive.hcatalog:hive-hcatalog-core:1.1.0"
     //org.apache.hive:hive-exec:
 }
 
