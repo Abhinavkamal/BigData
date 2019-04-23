@@ -13,7 +13,6 @@ dependencies {
     compile "org.scala-lang:scala-library:"+scalaVersion
     compile "org.scala-lang:scala-reflect:"+scalaVersion
     compile "org.scala-lang:scala-compiler:"+scalaVersion
-
     compile 'org.apache.spark:spark-mllib_2.11:2.1.0'
     compile 'org.apache.spark:spark-sql_2.11:2.1.0'
     compile 'org.apache.spark:spark-streaming-flume-assembly_2.11:2.1.0'
@@ -22,11 +21,11 @@ dependencies {
     compile 'org.apache.spark:spark-catalyst_2.11:2.1.0'
     compile 'org.apache.spark:spark-streaming_2.11:2.1.0'
     compile 'org.apache.spark:spark-core_2.11:2.1.0'
-    compile "org.apache.hadoop:hadoop-client:2.6.0-cdh5.5.1"
-    compile "org.apache.hive:hive-exec:1.1.0-cdh5.5.1"
-    compile "org.apache.hive:hive-serde:1.1.0-cdh5.5.1"
-    compile "org.apache.hive.hcatalog:hive-hcatalog-core:1.1.0-cdh5.5.1"
-
+    compile "org.apache.hadoop:hadoop-client_2.6.0"
+    compile "org.apache.hive:hive-exec:1.1.0"
+    compile "org.apache.hive:hive-serde_1.1.0"
+    compile "org.apache.hive.hcatalog:hive-hcatalog-core_1.1.0"
+    //org.apache.hive:hive-exec:
 }
 
 task run(type: JavaExec, dependsOn: classes) {
