@@ -25,7 +25,21 @@ dependencies {
     compile "org.apache.hive:hive-exec:1.1.0"
     compile "org.apache.hive:hive-serde:1.1.0"
     compile "org.apache.hive.hcatalog:hive-hcatalog-core:1.1.0"
-    //org.apache.hive:hive-exec:
+    compile(group: 'com.typesafe.play', name: 'play-json_2.11', version: '2.6.9'){
+        exclude group: 'org.scalatest'
+        exclude group: 'org.slf4j'
+        exclude group: 'log4j'
+    }
+    // https://mvnrepository.com/artifact/ai.x/play-json-extensions
+    compile group: 'ai.x', name: 'play-json-extensions_2.11', version: '0.10.0'
+        // https://mvnrepository.com/artifact/org.scalaz/scalaz-core
+    compile group: 'org.scalaz', name: 'scalaz-core_2.11', version: '7.3.0-M27'
+    compile 'org.scalaj:scalaj-http_2.11:2.4.0'
+    compile group: 'org.mongodb.spark', name: 'mongo-spark-connector_2.11', version: '2.1.5'
+    compile group: 'org.mongodb.scala', name: 'mongo-scala-driver_2.11', version: '2.6.0'
+    compile group: 'org.mongodb', name: 'mongo-java-driver', version: '3.1.0'
+
+//org.apache.hive:hive-exec:
 }
 
 task run(type: JavaExec, dependsOn: classes) {
