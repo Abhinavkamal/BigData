@@ -1,0 +1,38 @@
+[
+        {
+          "$match": {
+            "pivotType": "Time",
+            "timestamp": {
+              "$lt": "&lessThanTime",
+              "$gte": "&greaterThanTime"
+            },
+            "userName": {
+              "$in": "&usersList"
+            }
+          }
+        },
+        {
+          "$unwind": "$pivots"
+        },
+        {
+          "$sort": {
+            "timestamp": -1
+          }
+        },
+        {
+          "$group": {
+            "_id": {
+              "user": "user",
+              "role": "$role"
+            },
+            "Id": {
+              "$first": "Id"
+            }
+          }
+        },
+        {
+          "$project": {
+            "_id": 0
+          }
+        }
+      ]
