@@ -1,0 +1,721 @@
+import pandas as pd
+import numpy
+import psycopg2
+from dateutil.parser import parse
+import json
+from sqlalchemy import create_engine, types
+import os
+import re
+
+
+def insert_into_database(df, engine, schema, table_name, write_type='append',  dtypes=None):
+    """
+    Method to insert data from pandas dataframe to postgres table.
+    :param df: pandas dataframe containing the data.
+    :param engine: postgres engine.
+    :param dtypes: A dict specifying the field types for complex data types. Ex:'related_problems':sqlalchemy.types.JSON
+    :param schema: Postgres schema name.
+    :param table_name: postgres Table Name to insert data.
+    :param write_type: Has two options.
+                        1. Append(Appends the data to existing table
+                        2. Replace(Drops and recreates the table with the new data)
+    :return: On success returns nothing, upon failure, logs the error message to error log and exists the program.
+    """
+    if len(df) > 0:
+        try:
+            df.to_sql(name=table_name, con=engine, if_exists=write_type, index=False,
+                      schema=schema, method="multi", dtype=dtypes )
+            print('successfully inserted data into database,'
+                  ' Table Name: {tb_name}, Schema:{schema}, Number of records: {num_records}'.
+                  format(tb_name=table_name, schema=schema, num_records=len(df)))
+        except Exception as E:
+            print(E)
+            raise
+    else:
+        print('No records found for data while inserting into database')
+
+
+def get_items(root, *keys):
+    """
+    This method checks if the given key or keys[for a nested element] exists in the input dictionary and
+     returns the value for the last element in keys.
+    :param root: input dictionary
+    :param keys: list of keys
+    :return: element if last element of keys is found in root, otherwise None
+    """
+    root = root
+    if type(root) is list:
+        if len(root) > 0:
+            if type(keys[0]) is int:
+                try:
+                    root = root[keys[0]]
+                    keys = keys[1:]
+                except:
+                    return None
+        else:
+            return None
+    if not keys:
+        return None
+    if type(root) is dict:
+        if keys[0] not in root:
+            return None
+        if ((keys[0] in root) & (len(keys) > 1)):
+            return get_items(root[keys[0]], *keys[1:])
+        elif ((keys[0] in root) & (len(keys) == 1)):
+            output = root.get(keys[0],None)
+            return output
+        else:
+            return None
+    else:
+        return None
+
+
+def fetch_data_from_dict_for_list(input_dict, fields_list):
+    output_dict = {}
+    for field in fields_list:
+        field_key = field[0]
+        output_field_name = field[1]
+        print(field_key)
+        output_value = get_items(input_dict, *field_key)
+        # print (output_field_name, ':', output_value)
+        if output_field_name in output_dict:
+            existing_value = output_dict[output_field_name]
+            if isinstance(existing_value, list):
+                if output_value is not None:
+                    try:
+                        if output_value not in existing_value:
+                            existing_value.append(output_value)
+                    except:
+                        existing_value.append(output_value)
+                    output_dict[output_field_name] = existing_value
+            else:
+                existing_value = [existing_value]
+                output_dict[output_field_name] = existing_value
+        else:
+            output_dict[output_field_name] = output_value
+    return output_dict
+
+def fetch_data_from_dict(input_dict, fields_list):
+    return get_items(input_dict, *fields_list)
+
+
+def recursive_items(input_list, prev_item,  dictionary):
+    """
+    Its a recursive method to find all the keys until the lowest level.
+    :param input_list: []
+    :param prev_item: a string value which is used in recursion check
+    :param dictionary: input dictionary
+    :return: list of keys for all the items in the dictionary.
+    """
+    for key, value in dictionary.items():
+        # input_check_list = [] if len(input_list) == 0  else input_list
+        # prev = None if len(input_list) == 0 else input_list[-1]
+        if prev_item in input_list:
+            index = len(input_list) - 1 - input_list[::-1].index(prev_item)
+            internal = input_list[0:index+1]
+        else:
+            internal = []
+        if type(value) is dict:
+            internal.append(key)
+            yield from recursive_items(internal, key, value)
+        elif type(value) is list:
+            internal.append(key)
+            if len(value) == 1:
+                for item in value:
+                    if type(item) in [dict, list]:
+                        internal.append(value.index(item))
+                        yield from recursive_items(internal, value.index(item), item)
+                        internal = internal[:-1]
+                    else:
+                        yield internal
+            else:
+                yield internal
+                pass
+        else:
+            internal.append(key)
+            yield internal
+
+def recursive_all_items(input_list, prev_item,  dictionary):
+    """
+    Its a recursive method to find all the keys until the lowest level.
+    :param input_list: []
+    :param prev_item: a string value which is used in recursion check
+    :param dictionary: input dictionary
+    :return: list of keys for all the items in the dictionary.
+    """
+    for key, value in dictionary.items():
+        # input_check_list = [] if len(input_list) == 0  else input_list
+        # prev = None if len(input_list) == 0 else input_list[-1]
+        if prev_item in input_list:
+            index = len(input_list) - 1 - input_list[::-1].index(prev_item)
+            internal = input_list[0:index+1]
+        else:
+            internal = []
+        if type(value) is dict:
+            internal.append(key)
+            yield from recursive_all_items(internal, key, value)
+        elif type(value) is list:
+            internal.append(key)
+            if len(value) > 0:
+                for index, item in enumerate(value):
+                    if type(item) in [dict, list]:
+                        internal.append(index)
+                        yield from recursive_all_items(internal, index, item)
+                        internal = internal[:-1]
+                    else:
+                        yield internal
+            else:
+                yield internal
+                pass
+        else:
+            internal.append(key)
+            yield internal
+
+
+def check_input_dict(inpt_dct):
+    if type(inpt_dct) is dict:
+        return inpt_dct
+    elif type(inpt_dct) is str:
+        try:
+            return json.loads(inpt_dct)
+        except Exception as e:
+            try:
+                raw_s = r'{}'.format(inpt_dct)
+                return json.loads(raw_s)
+            except Exception as e:
+                try:
+                    return json.loads(inpt_dct, strict=False)
+                except Exception as e:
+                    try:
+                        inpt_dct = inpt_dct.replace('\r', '\\r').replace('\n', '\\n')
+                        return json.loads(inpt_dct)
+                    except Exception as e:
+                        try:
+                            inpt_dct = str(inpt_dct).replace('"', '\'')
+                            return json.loads(inpt_dct)
+                        except Exception as e:
+                            raise e
+
+
+def generate_key_paths(input_dict, check_key, output_index=None):
+    """
+    Takes a list of keys and fetches the values which can be located in any level in the entire dictionary.
+    :param input_dict: dictionary
+    :param check_key: list of keys. function will fetch the value for last item in the list, but use other elements to filter.
+    :param output_type: list- list gives all occurences of the keys, first - gives only the first occurence of key.
+    :return: returns value based on output type param.
+    """
+    inpt_dict = check_input_dict(input_dict)
+    recr_output = list(recursive_all_items([], None, inpt_dict))
+    for key in check_key:
+        recr_output = [i for i in recr_output if key in i]
+    keys_list = []
+    if len(recr_output) > 0:
+        for item in recr_output:
+            indx = recr_output[recr_output.index(item)].index(check_key[-1])
+            if not recr_output[recr_output.index(item)][0:indx+1] in keys_list:
+                keys_list.append( recr_output[recr_output.index(item)][0:indx+1])
+    if len(keys_list) == 0:
+        return None
+    else:
+        values_list = [fetch_data_from_dict(inpt_dict, key) for key in keys_list]
+        if output_index is None:
+            return values_list
+        else:
+            return values_list[output_index]
+
+
+def get_all_keys(input_dict):
+    inpt_dict = check_input_dict(input_dict)
+    all_keys = list(recursive_items([], None, inpt_dict))
+    return all_keys
+
+def get_all_list_keys(input_dict):
+    inpt_dict = check_input_dict(input_dict)
+    all_keys = list(recursive_all_items([], None, inpt_dict))
+    return all_keys
+
+def get_column_type(name, data_type, value):
+    """
+    Method extracts the equivalent postgres data type for a pandas column.
+    :param name: field name
+    :param data_type: pandas datatype of the field.
+    :param value: value of the field.
+    :return: postgres equivalent data type, sql alchemy dtypes.
+    """
+    dtypes = None
+    out_data_type = 'text'
+    if data_type == numpy.dtype('bool'):
+        out_data_type = 'Boolean'
+    elif data_type == numpy.dtype('int64'):
+        out_data_type = 'bigint'
+    elif data_type == numpy.dtype('float64'):
+        out_data_type = 'double precision'
+    elif data_type == numpy.dtype('O'):
+        if str(name).__contains__('timestamp') or str(name).__contains__('date') or  str(name).__contains__('modified') or  str(name).__contains__('created') :
+            try:
+                parse(value)
+                if len(value) > 8 and len(value) <= 10:
+                    out_data_type = 'date'
+                else:
+                    out_data_type = 'timestamp with time zone'
+            except:
+                out_data_type = 'text'
+        else:
+            if isinstance(value, dict):
+                out_data_type = 'json'
+                dtypes = types.JSON
+            elif isinstance(value, str):
+                try:
+                     json.loads(value)
+                     out_data_type = 'json'
+                     dtypes = types.JSON
+                except:
+                    out_data_type = 'text'
+            elif isinstance(value, list):
+                try:
+                    if isinstance(value[0], dict):
+                        out_data_type = 'json'
+                        dtypes = types.JSON
+                    else:
+                        json.loads(value[0])
+                        out_data_type = 'json'
+                        dtypes = types.JSON
+                except:
+                    try:
+                        value_dtypes = list(set([type(i) for i in value]))
+                        if len(value_dtypes) == 1:
+                            value_dtypes = value_dtypes[0]
+                            if value_dtypes == int:
+                                out_data_type = 'bigint []'
+                            elif value_dtypes == str:
+                                out_data_type = 'text []'
+                            elif value_dtypes == float:
+                                out_data_type = 'float []'
+                            else:
+                                out_data_type = 'text'
+                        else:
+                            out_data_type = 'json'
+                            dtypes = types.JSON
+                    except:
+                        out_data_type = 'text'
+    return name, out_data_type, dtypes
+
+
+
+def drop_table_in_database(schema, table_name, pg_url):
+    """
+    creates the given columns in the given postgres table.
+    :param column_list: List of columns.
+    :param schema: postgres schema.
+    :param table_name: postgres table.
+    :return: None
+    """
+    pg_url = pg_url.split('://')[1]
+    pg_url = pg_url.split('@')
+    user = pg_url[0].split(':')[0]
+    password = pg_url[0].split(':')[1]
+    dbname = pg_url[1].split('/')[1]
+    host = pg_url[1].split('/')[0].split(':')[0]
+    port = pg_url[1].split('/')[0].split(':')[1]
+    conn = psycopg2.connect(dbname=dbname, host=host, port=port,
+                            user=user, password=password)
+    conn.set_isolation_level(0)
+    conn.autocommit = True
+    cursor = conn.cursor()
+    create_statement = "DROP TABLE IF EXISTS  {schema}.{table_name};"
+    cursor.execute(create_statement.format(schema= schema, table_name=table_name))
+
+
+def fetch_dtypes(new_column_list):
+    final_dtypes = {}
+    final_column_dtypes = []
+    for column_tup in new_column_list:
+        # fetches the equivalent postgres column type using the below method.
+        name, column_type, dtypes = get_column_type(column_tup[0], column_tup[1], column_tup[2])
+        if dtypes is not None:
+            final_dtypes[name] = dtypes
+        final_column_dtypes.append((name, column_type))
+    final_dtypes = None if len(final_dtypes) < 1 else final_dtypes
+    return final_dtypes, final_column_dtypes
+
+
+def create_columns_in_database(new_column_dtypes, schema, table_name, pg_url):
+    """
+    creates the given columns in the given postgres table.
+    :param column_list: List of columns.
+    :param schema: postgres schema.
+    :param table_name: postgres table.
+    :return: None
+    """
+    pg_url = pg_url.split('://')[1]
+    pg_url = pg_url.split('@')
+    user = pg_url[0].split(':')[0]
+    password = pg_url[0].split(':')[1]
+    dbname = pg_url[1].split('/')[1]
+    host = pg_url[1].split('/')[0].split(':')[0]
+    port = pg_url[1].split('/')[0].split(':')[1]
+    conn = psycopg2.connect(dbname=dbname, host=host, port=port,
+                            user=user, password=password)
+    conn.set_isolation_level(0)
+    conn.autocommit = True
+    cursor = conn.cursor()
+    create_statement = "CREATE TABLE IF NOT EXISTS  {schema}.{table_name}();"
+    cursor.execute(create_statement.format(schema= schema, table_name=table_name))
+    # final_dtypes = {}
+    for column_tup in new_column_dtypes:
+        # fetches the equivalent postgres column type using the below method.
+        column = column_tup[0]
+        column_type = column_tup[1]
+        db_statement = "ALTER TABLE {schema}.{table_name} ADD COLUMN IF NOT EXISTS {column_name} {column_type};"
+        print(db_statement.format(schema= schema, table_name=table_name, column_name=column, column_type=column_type))
+        cursor.execute(db_statement.format(schema= schema, table_name=table_name, column_name=column,
+                                           column_type=column_type))
+        # if dtypes is not None:
+        #     final_dtypes[column] = dtypes
+    cursor.close()
+    conn.close()
+
+
+def create_table_structure(new_column_dtypes, schema, table_name):
+    create_statement = "CREATE TABLE IF NOT EXISTS  {schema}.{table_name}(".format(schema= schema, table_name=table_name)
+    for column_tup in new_column_dtypes:
+        # fetches the equivalent postgres column type using the below method.
+        column = column_tup[0]
+        column_type = column_tup[1]
+        create_statement = create_statement + '\n' + '{column} {column_type},'.format(column=column, column_type=column_type)
+    create_statement = create_statement.split(',')[0]
+    create_statement = create_statement + ');'
+    return create_statement
+
+
+def extract_input_fields(input_keys1, input_keys2):
+    diff_keys = [key for key in input_keys2 if key not in input_keys1]
+    return input_keys1+diff_keys
+
+import re
+def get_trailing_number(s):
+    m = re.search(r'\d+$', s)
+    return str(m.group()) if m else ''
+
+
+def format_input_fields(fields):
+    """
+    Formats a given list of strings.
+    :param fields: List of strings.
+    :return: Tuple(Lists)
+    """
+    input_fields = []
+    output_fields = []
+    for input_keys, field_name in fields:
+        trailing_number = get_trailing_number(field_name)
+        field = re.sub('\d', '', field_name).replace('__', '_').replace('-','')
+        output_field = ''
+        bool = False
+        for i in range(0, len(field)):
+            check = str(field[i]).istitle()
+            if check:
+                if check == bool:
+                    output_field = output_field + str(field[i]).lower()
+                elif i == 0:
+                    output_field = output_field + str(field[i]).lower()
+                else:
+                    output_field = output_field + '_' + str(field[i]).lower()
+            else:
+                output_field = output_field + str(field[i])
+            bool = check
+        output_field = output_field.replace('__', '_').replace('-','')
+        output_field = output_field + trailing_number
+        input_fields.append((input_keys, output_field))
+        output_fields.append(output_field)
+    return input_fields, output_fields
+
+
+
+def format_dataframe_fields(fields):
+    """
+    Formats a given list of strings.
+    :param fields: List of strings.
+    :return: Tuple(Lists)
+    """
+    output_fields = []
+    for field in fields:
+        trailing_number = get_trailing_number(field)
+        field_mdfd = re.sub('\d', '', field).replace('__', '_')
+        output_field = ''
+        bool = False
+        for i in range(0, len(field_mdfd)):
+            check = str(field_mdfd[i]).istitle()
+            if check:
+                if check == bool:
+                    output_field = output_field + str(field_mdfd[i]).lower()
+                elif i == 0:
+                    output_field = output_field + str(field_mdfd[i]).lower()
+                else:
+                    output_field = output_field + '_' + str(field_mdfd[i]).lower()
+            else:
+                output_field = output_field + str(field_mdfd[i])
+            bool = check
+        output_field = output_field + trailing_number
+        output_fields.append((field, output_field))
+    return output_fields
+
+
+def fetch_first_non_value_from_df(df, field):
+    try:
+        value =  df[~df[field].isnull()][field].iloc[0]
+        if isinstance(value, list) or isinstance(value, dict):
+            value = df[df[field].apply(lambda x: False if x==[] or x =={} else True)][field].iloc[0]
+        return value
+    except:
+        return None
+
+
+def fetch_first_non_json_value_from_df(df, field):
+    try:
+        return df[df[field].apply(lambda x: False if x==[] or x =={} else True)][field].iloc[0]
+    except:
+        return None
+
+
+def compare_df_with_database_and_generate_columns(df, pg_engine, postgres_url, schema, table):
+    """
+    compares the fields in the given dataframe with the specified postgres table and then creates the missing columns
+    in the table.
+    :param df: pandas DataFrame
+    :param pg_engine: postgres engine
+    :param schema: postgres schema
+    :param table: postgres table.
+    :return: list of columns.
+    """
+    latest_run_date_query = """select column_name,data_type from information_schema.columns
+                                where table_name = '{table}' and table_schema = '{schema}';""".\
+                                format(schema=schema, table=table)
+    existing_dtypes = {}
+    existing_dtypes_list = []
+    try:
+        existing_data = pd.read_sql_query(latest_run_date_query, pg_engine)
+        existing_data = existing_data[['column_name', 'data_type']].values.tolist()
+        existing_fields = [i[0] for i in existing_data]
+        existing_dtypes_list = [i for i in existing_data if i[1] == 'json']
+        if len(existing_dtypes_list) > 0:
+            for ele in existing_dtypes_list:
+                existing_dtypes[ele[0]] = types.JSON
+    except:
+        existing_fields = []
+    new_fields = [ele for ele in list(df) if ele not in existing_fields]
+    json_child_fields = []
+    all_json_fields = []
+    new_fields_dtypes = [(field, df[field].dtype, fetch_first_non_value_from_df(df, field))
+                         for field in new_fields]
+
+    # if len(df) > 1:
+    column_type_dtypes = [get_column_type(tup[0], tup[1], tup[2]) for tup in new_fields_dtypes]
+    new_json_fields = [ele[0] for ele in column_type_dtypes if ele[1] == 'json']
+    existing_json_fields = [ele[0] for ele in existing_dtypes_list]
+    all_json_fields = new_json_fields + existing_json_fields
+    all_json_fields = list(set(all_json_fields))
+    if len(all_json_fields) > 0:
+        for j in all_json_fields:
+            for i in new_fields:
+                if str(i).startswith(j+'_'):
+                    json_child_fields.append((i, str(i).replace(j+'_',''), j))
+
+    json_child_field_not_required = []
+    all_json_field_values = [(field, fetch_first_non_json_value_from_df(df, field)) for field in all_json_fields]
+
+    all_json_null_keys = [i[0] for i in all_json_field_values if ((i[1] is None) and (i[0] in existing_json_fields))]
+    all_json_not_null_field_values = [i for i in all_json_field_values if not ((i[1] is None) and (i[0] in existing_json_fields))]
+
+    for tup in all_json_not_null_field_values:
+        key = tup[0]
+        value = tup[1]
+        internal = [i[0] for i in json_child_fields if i[2] == key]
+        if type(value) is list:
+                if len(value) > 0:
+                    value = value[0]
+        dict = {key : value}
+        value_keys = get_all_keys(dict)
+        value_keys = [(item, '_'.join([str(ele) for ele in item])) for item in value_keys]
+        input_fields, output_fields = format_input_fields(value_keys)
+        unwanted_fields = [i for i in internal if i in output_fields]
+        if len(unwanted_fields) > 0:
+            json_child_field_not_required.extend(unwanted_fields)
+
+    new_fields_dtypes = [ele for ele in new_fields_dtypes if ele[0] not in json_child_field_not_required]
+    for field in all_json_null_keys:
+        new_fields_dtypes = [ele for ele in new_fields_dtypes if not str(ele[0]).startswith(field)]
+
+    final_new_fields = [field[0] for field in new_fields_dtypes]
+    if len(new_fields_dtypes) > 0:
+        new_dtypes, final_column_dtypes = fetch_dtypes(new_fields_dtypes)
+        final_dtypes = {}
+        if len(new_dtypes) > 0:
+            final_dtypes.update(new_dtypes)
+        if len(existing_dtypes) > 0:
+            final_dtypes.update(existing_dtypes)
+        final_fields = existing_fields + final_new_fields
+    else:
+        final_dtypes = existing_dtypes
+        final_fields = existing_fields
+        final_column_dtypes = []
+    final_dtypes = None if len(final_dtypes) == 0 else final_dtypes
+
+    return final_new_fields, final_fields, final_dtypes, final_column_dtypes
+
+
+def extract_data_from_json(data, fields_list):
+    if len(data) > 0:
+        input_keys = []
+        for result in data:
+            inp_keys = get_all_keys(result)
+            input_keys = extract_input_fields(input_keys, inp_keys)
+        input_keys = [(item, '_'.join([str(ele) for ele in item])) for item in input_keys]
+        input_keys_modfd = []
+        temp = []
+        for key, value in input_keys:
+            if key[0] not in temp:
+                if len(key) == 1:
+                    input_keys_modfd.append((key, value))
+                    temp.append(key[0])
+                else:
+                    input_keys_modfd.append((key, value))
+
+        if len(fields_list) > 0:
+            field_input_keys = []
+            for result in data:
+                inp_keys = get_all_list_keys(result)
+                field_input_keys = extract_input_fields(field_input_keys, inp_keys)
+            field_input_keys = [(item, '_'.join([str(ele) for ele in item])) for item in field_input_keys]
+
+            fields_list_out = []
+            for field in fields_list:
+                 if isinstance(field, list):
+                     internal_fields = [i for i in field_input_keys if i == field]
+                     if len(internal_fields) > 0:
+                         fields_list_out.extend(internal_fields)
+                     else:
+                         fields_list_out.append((field, '_'.join(field)))
+                 else:
+                    internal_fields = [i for i in field_input_keys if i[0][-1] == field]
+                    if len(internal_fields) > 0:
+                         fields_list_out.extend(internal_fields)
+                    else:
+                        fields_list_out.append(([field], field))
+
+            input_fields, output_fields = format_input_fields(fields_list_out)
+        else:
+            input_fields, output_fields = format_input_fields(input_keys)
+        extracted_data = [fetch_data_from_dict_for_list(ele, input_fields) for ele in data]
+        df = pd.DataFrame.from_records(extracted_data)
+    else:
+        df = pd.DataFrame
+    return df
+
+
+def check_file_and_create_df(file_path, fields_list):
+    if os.path.isfile(file_path):
+        file_extension = str(file_path).split('.')[-1]
+        if file_extension == 'csv' or file_extension == 'txt':
+            try:
+                df = pd.read_csv(file_path)
+            except Exception as e:
+                print("The given input csv file is not a valid file. file_path: {file_path}".format(file_path=file_path))
+                raise e[:200]
+        elif file_extension == 'xlsx':
+            try:
+                df = pd.read_excel(file_path)
+            except Exception as e:
+                print("The given input csv file is not a valid file. file_path: {file_path}".format(file_path=file_path))
+                raise e[:200]
+        elif file_extension == 'json':
+            try:
+                with open(file_path) as f:
+                    output_data = json.load(f)
+                    df = extract_data_from_json([output_data], fields_list)
+            except Exception as e:
+                print("The given input csv file is not a valid file. file_path: {file_path}".format(file_path=file_path))
+                raise e[:200]
+        else:
+            raise Exception("The input is not a valid format file")
+        return df
+    else:
+        raise Exception("The given input excel file is not a valid file. file_path: {file_path}".format(file_path=file_path))
+
+
+def check_source_and_create_columns(data_source, fields_list=[], schema=None, table=None, postgres_url=pg_url,
+                                    push_to_db=False, create_cols_in_db=False):
+    pg_engine = create_engine(postgres_url)
+    if isinstance(data_source, pd.DataFrame):
+        df = data_source
+    elif isinstance(data_source, list):
+        if len(data_source) > 0:
+            try:
+                output_data = [check_input_dict(data) for data in data_source]
+                df = extract_data_from_json(output_data, fields_list)
+            except Exception as e:
+                raise e
+        else:
+            raise Exception("The given input list is empty")
+    elif isinstance(data_source, dict):
+        df = extract_data_from_json([data_source], fields_list)
+    elif isinstance(data_source, str):
+        if os.path.isfile(data_source):
+            df = check_file_and_create_df(data_source, fields_list)
+        elif os.path.isdir(data_source):
+            list_of_files = list()
+            for (dirpath, dirnames, filenames) in os.walk(data_source):
+                list_of_files += [os.path.join(dirpath, file) for file in filenames]
+            list_of_files = [file for file in list_of_files if file.split('.')[-1] in ['json', 'txt', 'csv', 'xlsx']]
+            if len(list_of_files) > 0:
+                dfs = []
+                for file in list_of_files:
+                    internal_df = check_file_and_create_df(file, fields_list)
+                    dfs.append(internal_df)
+                df = pd.concat(dfs).reset_index(drop=True)
+            else:
+                raise Exception("The input directory is either empty or does not have valid files")
+        else:
+            try:
+                output_data = [check_input_dict(data_source)]
+                df = extract_data_from_json(output_data, fields_list)
+            except Exception as e:
+                print("Issue while parsing the input json string")
+                raise e[:200]
+        if len(fields_list) > 0:
+            try:
+                df_cols = list(df)
+                for field in fields_list:
+                    df_cols = [i for i in df_cols if str(i).__contains__(str(field).lower())]
+                df = df[df_cols]
+            except:
+                raise ValueError("Given input fields does not present in the Json.")
+            output_fields = format_dataframe_fields(list(df))
+            df.rename(columns=dict(output_fields), inplace=True)
+    else:
+        raise Exception("The given input does not fit the use case")
+    try:
+        if create_cols_in_db:
+            if len(df) > 0:
+                final_new_fields, final_fields, final_dtypes, final_column_dtypes = compare_df_with_database_and_generate_columns(df, pg_engine, postgres_url, schema, table)
+            else:
+                final_new_fields, final_fields, final_dtypes, final_column_dtypes = [], [], None, []
+            if push_to_db:
+                create_columns_in_database(final_column_dtypes, schema, table, pg_url)
+                missing_fields = [field for field in final_fields if field not in list(df)]
+                for field in missing_fields:
+                    if field in list(final_dtypes.keys()):
+                        df[field] = None
+                        df[field] = df[field].apply(lambda x: {} if x is None else x)
+                    else:
+                        df[field] = None
+                if len(final_fields) > 0:
+                    df = df[final_fields]
+                insert_into_database(df, pg_engine, schema, table, 'append', final_dtypes)
+            return df, final_fields, final_dtypes
+        else:
+            return df, list(df), None
+    except Exception as e:
+        # drop_table_in_database(schema, table, pg_url)
+        raise e
+
